@@ -1,0 +1,479 @@
+openapi: 3.0.3
+
+info:
+  title: Todo API
+  version: 1.0.0
+  description: >
+    Task management API. This specification is the design contract produced in
+    Module 2 / Task 1. Rationale for every decision lives in API-DESIGN.md.
+  license:
+    name: ISC
+    url: https://opensource.org/license/isc-license-txt
+
+servers:
+  - url: http://localhost:3500/api/v1
+    description: Local development
+
+tags:
+  - name: Auth
+    description: Registration and login
+  - name: Tasks
+    description: Task resource
+
+paths:
+
+  /auth/register:
+    post:
+      tags: [Auth]
+      operationId: registerUser
+      summary: Create an account
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegisterRequest' }
+      responses:
+        '201':
+          description: Account created
+          headers:
+            Location:
+              description: URL of the created user's profile
+              schema: { type: string, example: /api/v1/users/me }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      operationId: loginUser
+      summary: Exchange credentials for an access token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200':
+          description: Authenticated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401':
+          description: >
+            Invalid credentials. The response is identical for an unknown email
+            and a wrong password, so registered emails cannot be enumerated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+              example:
+                success: false
+                error:
+                  code: INVALID_CREDENTIALS
+                  message: Email or password is incorrect
+                  details: []
+                requestId: 3f9a1c7e-6b21-4f0e-9c8d-5a2b7e1d4c33
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /users/me:
+    get:
+      tags: [Auth]
+      operationId: getCurrentUser
+      summary: Current user's profile
+      responses:
+        '200':
+          description: Profile
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserResponse' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /tasks:
+    get:
+      tags: [Tasks]
+      operationId: listTasks
+      summary: List the caller's tasks
+      parameters:
+        - name: completed
+          in: query
+          description: Filter by completion state. Omit for all tasks.
+          required: false
+          schema: { type: boolean }
+        - name: page
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - name: sort
+          in: query
+          description: Field to sort by. A leading '-' sorts descending.
+          required: false
+          schema:
+            type: string
+            enum: [createdAt, -createdAt, title, -title]
+            default: -createdAt
+      responses:
+        '200':
+          description: Task list. Returns 200 with an empty array when nothing matches.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskListResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+    post:
+      tags: [Tasks]
+      operationId: createTask
+      summary: Create a task
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateTaskRequest' }
+      responses:
+        '201':
+          description: Task created
+          headers:
+            Location:
+              description: URL of the created task
+              schema: { type: string, example: /api/v1/tasks/42 }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+    delete:
+      tags: [Tasks]
+      operationId: bulkDeleteTasks
+      summary: Bulk delete by filter
+      description: >
+        Requires an explicit filter. There is deliberately no way to delete the
+        entire collection in one unguarded call.
+      parameters:
+        - name: completed
+          in: query
+          required: true
+          schema: { type: boolean }
+      responses:
+        '204':
+          description: Matching tasks deleted. Empty body, including zero matches.
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /tasks/{taskId}:
+    parameters:
+      - name: taskId
+        in: path
+        required: true
+        schema: { type: integer, minimum: 1 }
+
+    get:
+      tags: [Tasks]
+      operationId: getTaskById
+      summary: Fetch one task
+      responses:
+        '200':
+          description: The task, as a single object
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/TaskNotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+    patch:
+      tags: [Tasks]
+      operationId: patchTask
+      summary: Partially update a task
+      description: >
+        Any subset of fields. Omitted fields are left unchanged. A field that is
+        present but falsy — completed:false, description:"" — is applied, not
+        skipped.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PatchTaskRequest' }
+      responses:
+        '200':
+          description: Updated task
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/TaskNotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+    put:
+      tags: [Tasks]
+      operationId: replaceTask
+      summary: Replace a task
+      description: >
+        Full replacement. Omitted optional fields are reset to their defaults,
+        which is what distinguishes PUT from PATCH.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReplaceTaskRequest' }
+      responses:
+        '200':
+          description: Replaced task
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/TaskNotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+    delete:
+      tags: [Tasks]
+      operationId: deleteTask
+      summary: Delete a task
+      responses:
+        '204':
+          description: Deleted. Empty body.
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/TaskNotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+
+    Task:
+      type: object
+      properties:
+        id: { type: integer, example: 42 }
+        userId: { type: integer, example: 7 }
+        title: { type: string, example: Write Module 2 docs }
+        description: { type: string, nullable: true, example: Design the REST contract }
+        completed: { type: boolean, example: false }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    User:
+      type: object
+      description: The password hash is never serialised.
+      properties:
+        id: { type: integer, example: 7 }
+        name: { type: string, example: Isreal }
+        email: { type: string, format: email, example: isreal@example.com }
+        createdAt: { type: string, format: date-time }
+
+    RegisterRequest:
+      type: object
+      required: [name, email, password]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        email: { type: string, format: email }
+        password: { type: string, minLength: 8 }
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string }
+
+    CreateTaskRequest:
+      type: object
+      required: [title]
+      description: userId is taken from the token and ignored if sent in the body.
+      properties:
+        title: { type: string, minLength: 1, maxLength: 255 }
+        description: { type: string, nullable: true }
+        completed: { type: boolean, default: false }
+
+    PatchTaskRequest:
+      type: object
+      minProperties: 1
+      properties:
+        title: { type: string, minLength: 1, maxLength: 255 }
+        description: { type: string, nullable: true }
+        completed: { type: boolean }
+
+    ReplaceTaskRequest:
+      type: object
+      required: [title, description, completed]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 255 }
+        description: { type: string, nullable: true }
+        completed: { type: boolean }
+
+    PaginationMeta:
+      type: object
+      properties:
+        page: { type: integer, example: 1 }
+        limit: { type: integer, example: 20 }
+        total: { type: integer, example: 37 }
+        totalPages: { type: integer, example: 2 }
+
+    TaskResponse:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        data: { $ref: '#/components/schemas/Task' }
+        meta: { type: object, nullable: true, example: null }
+
+    TaskListResponse:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/Task' }
+        meta: { $ref: '#/components/schemas/PaginationMeta' }
+
+    UserResponse:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        data: { $ref: '#/components/schemas/User' }
+        meta: { type: object, nullable: true, example: null }
+
+    LoginResponse:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        data:
+          type: object
+          properties:
+            token: { type: string, example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9 }
+            expiresIn: { type: integer, description: Seconds until expiry, example: 3600 }
+            user: { $ref: '#/components/schemas/User' }
+        meta: { type: object, nullable: true, example: null }
+
+    ErrorEnvelope:
+      type: object
+      properties:
+        success: { type: boolean, example: false }
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: Stable, machine-readable identifier. Branch on this, not on message.
+              enum:
+                - VALIDATION_ERROR
+                - INVALID_QUERY_PARAM
+                - UNAUTHENTICATED
+                - INVALID_CREDENTIALS
+                - TASK_NOT_FOUND
+                - ROUTE_NOT_FOUND
+                - EMAIL_ALREADY_EXISTS
+                - RATE_LIMITED
+                - INTERNAL_ERROR
+            message:
+              type: string
+              description: Human-readable. Wording may change; do not parse.
+            details:
+              type: array
+              items:
+                type: object
+                properties:
+                  field: { type: string }
+                  issue: { type: string }
+        requestId:
+          type: string
+          description: Correlates this response with the server log entry.
+
+  responses:
+
+    ValidationError:
+      description: Malformed request, failed validation, or bad query parameter
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+          example:
+            success: false
+            error:
+              code: VALIDATION_ERROR
+              message: Request validation failed
+              details:
+                - field: title
+                  issue: title is required
+            requestId: 3f9a1c7e-6b21-4f0e-9c8d-5a2b7e1d4c33
+
+    Unauthenticated:
+      description: Token missing, malformed, or expired
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+          example:
+            success: false
+            error:
+              code: UNAUTHENTICATED
+              message: Authentication required
+              details: []
+            requestId: 3f9a1c7e-6b21-4f0e-9c8d-5a2b7e1d4c33
+
+    TaskNotFound:
+      description: >
+        No such task, or the task belongs to another user. Both cases return an
+        identical response so that task ids cannot be enumerated.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+          example:
+            success: false
+            error:
+              code: TASK_NOT_FOUND
+              message: Task not found
+              details: []
+            requestId: 3f9a1c7e-6b21-4f0e-9c8d-5a2b7e1d4c33
+
+    Conflict:
+      description: Request conflicts with current server state
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+          example:
+            success: false
+            error:
+              code: EMAIL_ALREADY_EXISTS
+              message: An account with that email already exists
+              details: []
+            requestId: 3f9a1c7e-6b21-4f0e-9c8d-5a2b7e1d4c33
+
+    InternalError:
+      description: >
+        Unhandled server fault. The underlying error is logged against requestId
+        and is never included in the response.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+          example:
+            success: false
+            error:
+              code: INTERNAL_ERROR
+              message: An unexpected error occurred
+              details: []
+            requestId: 3f9a1c7e-6b21-4f0e-9c8d-5a2b7e1d4c33
+
+security:
+  - bearerAuth: []
