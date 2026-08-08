@@ -7,7 +7,7 @@ class TasksController {
   //Create a task
   async createTask(req, res) {
     try {
-      const { title, description } = req.body;
+        const { title, description } = req.body;
       if (!title) {
         return res.status(400).json({
           success: false,
