@@ -1,52 +1,43 @@
-//21-12-2024 - Author: Stephen Akugbe
-
-/*TODO: 
-- Read the difference between Import and Require (ES6 syntax, ES5 syntax) - History of JS - ECMA
-- Read about naming conventions for API endpoints
-- Read on the difference between '==' and '===' in JS
-Routes and Controllers
-
-*/
-
-//dev, prod, local
-//local -> dev -> prod
-//main = prod
-//dev = dev, uat, stage,
-//local = feature/..., fix/..., hotfix/... GIT, github, gitlab, bitbucket
-const express = require("express");
 require("dotenv").config();
-const db = require("./config/db");
-const tasksRoutes = require("./routes/tasksRoute");
-const usersRoutes = require("./routes/usersRoute");
-const cors = require("cors");
 
-const app = express();
+const app = require("./app");
+const db = require("./config/db");
+
+/**
+ * Server entry point.
+ *
+ * The only job here is to check the required configuration, confirm the
+ * database is reachable, and start listening. Application wiring lives in
+ * app.js.
+ */
+
 const PORT = process.env.PORT || 3500;
 
-app.use(express.json());
-app.use(
-  cors({
-    origin: "*",
-  })
-);
+// Fail loudly at boot rather than at the first login attempt. Without a secret,
+// jwt.sign throws per-request and every auth route returns 500.
+const REQUIRED_ENV = ["DB_HOST", "DB_USER", "DB_NAME", "JWT_SECRET"];
+const missing = REQUIRED_ENV.filter((key) => !process.env[key]);
 
-app.use("/tasks", tasksRoutes);
-app.use("/users", usersRoutes);
+if (missing.length) {
+  console.error(`Missing required environment variables: ${missing.join(", ")}`);
+  console.error("Copy .env.example to .env and fill it in.");
+  process.exit(1);
+}
 
-db.getConnection()
-  .then((connection) => {
+const start = async () => {
+  try {
+    const connection = await db.getConnection();
+    connection.release(); // hand it back, it was only a reachability check
     console.log("Database connected successfully");
 
     app.listen(PORT, () => {
       console.log(`Server is running on port ${PORT}`);
+      console.log(`API base URL: http://localhost:${PORT}/api/v1`);
     });
-  })
-  .catch((err) => {
-    console.error("Error connecting to the database:", err);
-  });
+  } catch (err) {
+    console.error("Error connecting to the database:", err.message);
+    process.exit(1);
+  }
+};
 
-// Start the server after the database connection is established
-
-// app.listen(PORT, () => {
-//   console.log(`Server running on ${PORT}`);
-// });
+start();
