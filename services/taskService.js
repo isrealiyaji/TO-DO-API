@@ -4,14 +4,10 @@ const AppError = require("../utils/AppError");
 /**
  * Business rules for tasks.
  *
- * Shape checking now happens in the validate middleware, so everything arriving
+ * Shape checking happens in the validate middleware, so everything arriving
  * here is already the right type, trimmed, with defaults applied. What is left
  * is the part a schema cannot express: who owns a row, whether it exists, and
  * what a result means.
- *
- * That split matters. "title must be a string" is a fact about the request and
- * can be checked without touching the database. "this task is not yours" needs
- * a query and belongs here.
  *
  * Nothing in this file touches req or res, and nothing writes SQL.
  */
@@ -24,28 +20,39 @@ const taskService = {
     return taskRepository.create({ userId, ...body });
   },
 
+  /**
+   * Lists tasks with filtering, search, sorting and pagination.
+   *
+   * The count runs alongside the page rather than after it. Both queries are
+   * independent, so awaiting them in sequence would double the latency for no
+   * reason.
+   */
   async listTasks(userId, query) {
-    const { completed, page, limit, sort } = query;
+    const { page, limit, sort, ...filters } = query;
     const offset = (page - 1) * limit;
 
-    const descending = sort.startsWith("-");
-    const field = descending ? sort.slice(1) : sort;
-
     const [tasks, total] = await Promise.all([
-      taskRepository.findAllByUser(userId, {
-        completed,
-        limit,
-        offset,
-        sort: { field, descending },
-      }),
-      taskRepository.countByUser(userId, { completed }),
+      taskRepository.findAllByUser(userId, { filters, limit, offset, sort }),
+      taskRepository.countByUser(userId, filters),
     ]);
 
+    const totalPages = Math.ceil(total / limit);
+
     // An empty page is a valid answer, not an error, so this returns 200 with
-    // an empty array rather than a 404.
+    // an empty array rather than a 404. Asking for page 50 of 3 is likewise a
+    // legitimate question with the answer "nothing".
     return {
       tasks,
-      meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages,
+        // Computed server-side so a client does not have to reimplement the
+        // arithmetic — and get it wrong on the last page.
+        hasNextPage: page < totalPages,
+        hasPreviousPage: page > 1 && total > 0,
+      },
     };
   },
 

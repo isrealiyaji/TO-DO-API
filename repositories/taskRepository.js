@@ -3,12 +3,12 @@ const db = require("../config/db");
 /**
  * Database access for tasks.
  *
- * This file is the only place that knows SQL or that the columns are named
- * snake_case. It takes and returns plain camelCase objects, so if the storage
- * ever changes, nothing above this layer has to.
+ * The only place that knows SQL or that the columns are named snake_case. It
+ * takes and returns plain camelCase objects, so if the storage ever changes,
+ * nothing above this layer has to.
  *
- * It contains no business rules and no HTTP knowledge. It does not decide
- * whether a missing task is a 404; it just reports that there was no row.
+ * No business rules and no HTTP knowledge. It does not decide whether a missing
+ * task is a 404; it just reports that there was no row.
  */
 
 /** Turns a database row into the shape the rest of the app uses. */
@@ -23,19 +23,39 @@ const mapTask = (row) => ({
 });
 
 /**
- * Columns that may be sorted on.
+ * Maps the API's field names onto real columns.
  *
- * A sort column cannot be a bound parameter, it has to be interpolated into
- * the SQL string. So it is looked up in this map rather than taken from user
- * input, which is what keeps the query safe.
+ * A sort column cannot be a bound parameter — it has to be written into the SQL
+ * text. Looking it up here, from a fixed map, is what keeps that safe. The
+ * schema has already rejected anything not in this list, so this is the second
+ * of two gates.
  */
-const SORTABLE = {
+const SORT_COLUMNS = {
   createdAt: "created_at",
+  updatedAt: "updated_at",
   title: "title",
+  completed: "completed",
 };
 
-/** Builds the shared WHERE clause for a user's tasks. */
-const buildFilter = (userId, completed) => {
+/**
+ * Escapes the characters that mean something special inside a LIKE pattern.
+ *
+ * A bound parameter protects against SQL injection, but it does not stop `%`
+ * and `_` being treated as wildcards. Without this, searching for "50%" matches
+ * anything starting with "50", and a search of just "%" matches every row.
+ * Backslash is escaped first, otherwise it would double-escape the ones added
+ * after it.
+ */
+const escapeLike = (term) => term.replace(/[\\%_]/g, (char) => `\\${char}`);
+
+/**
+ * Builds the WHERE clause shared by list, count and bulk delete.
+ *
+ * Every branch is optional except user_id, which is never optional. That is the
+ * ownership guarantee: there is no code path here that reads or deletes a row
+ * without scoping it to its owner.
+ */
+const buildFilter = (userId, { completed, search, createdAfter, createdBefore } = {}) => {
   const clauses = ["user_id = ?"];
   const params = [userId];
 
@@ -44,7 +64,42 @@ const buildFilter = (userId, completed) => {
     params.push(completed ? 1 : 0);
   }
 
+  if (search) {
+    // Substring match across both text fields. The leading wildcard is what
+    // makes "port" find "Import report", and also what stops a normal index
+    // being usable — see docs/QUERYING.md.
+    const pattern = `%${escapeLike(search)}%`;
+    clauses.push("(title LIKE ? OR description LIKE ?)");
+    params.push(pattern, pattern);
+  }
+
+  if (createdAfter) {
+    clauses.push("created_at >= ?");
+    params.push(createdAfter);
+  }
+
+  if (createdBefore) {
+    clauses.push("created_at <= ?");
+    params.push(createdBefore);
+  }
+
   return { where: clauses.join(" AND "), params };
+};
+
+/**
+ * Builds ORDER BY from the validated sort list.
+ *
+ * `id` is appended as a final tiebreaker. Without it, rows with equal sort
+ * values have no defined order, and MySQL is free to return them differently
+ * between two identical queries — which makes a row appear on both page 1 and
+ * page 2, or on neither.
+ */
+const buildOrderBy = (sort) => {
+  const parts = sort.map(
+    ({ field, descending }) => `${SORT_COLUMNS[field]} ${descending ? "DESC" : "ASC"}`
+  );
+  parts.push("id ASC");
+  return parts.join(", ");
 };
 
 const taskRepository = {
@@ -60,7 +115,7 @@ const taskRepository = {
    * Looks up one task, scoped to its owner.
    *
    * There is deliberately no findById(id). Every read is scoped by user_id so
-   * that one user can never reach another user's row, even by accident.
+   * one user can never reach another user's row, even by accident.
    */
   async findByIdAndUser(id, userId) {
     const [rows] = await db.query(
@@ -70,20 +125,24 @@ const taskRepository = {
     return rows.length ? mapTask(rows[0]) : null;
   },
 
-  async findAllByUser(userId, { completed, limit, offset, sort }) {
-    const { where, params } = buildFilter(userId, completed);
-    const column = SORTABLE[sort.field];
-    const direction = sort.descending ? "DESC" : "ASC";
+  async findAllByUser(userId, { filters, limit, offset, sort }) {
+    const { where, params } = buildFilter(userId, filters);
 
     const [rows] = await db.query(
-      `SELECT * FROM tasks WHERE ${where} ORDER BY ${column} ${direction} LIMIT ? OFFSET ?`,
+      `SELECT * FROM tasks WHERE ${where} ORDER BY ${buildOrderBy(sort)} LIMIT ? OFFSET ?`,
       [...params, limit, offset]
     );
     return rows.map(mapTask);
   },
 
-  async countByUser(userId, { completed }) {
-    const { where, params } = buildFilter(userId, completed);
+  /**
+   * Counts rows matching the same filters, for the pagination total.
+   *
+   * This runs as a second query rather than being derived from the page, since
+   * a page of 20 cannot tell you whether 21 or 2100 rows matched.
+   */
+  async countByUser(userId, filters) {
+    const { where, params } = buildFilter(userId, filters);
     const [rows] = await db.query(
       `SELECT COUNT(*) AS total FROM tasks WHERE ${where}`,
       params
@@ -94,7 +153,7 @@ const taskRepository = {
   /**
    * Updates only the columns present in `fields`.
    *
-   * `fields` has already been filtered by the service to the keys the caller
+   * `fields` has already been reduced by the schema to the keys the caller
    * actually sent, which is what allows completed:false to be written instead
    * of being mistaken for "not supplied".
    */
@@ -134,10 +193,10 @@ const taskRepository = {
   },
 
   async removeByCompleted(userId, completed) {
-    const { where, params } = buildFilter(userId, completed);
+    const { where, params } = buildFilter(userId, { completed });
     const [result] = await db.query(`DELETE FROM tasks WHERE ${where}`, params);
     return result.affectedRows;
   },
 };
 
-module.exports = { taskRepository, SORTABLE };
+module.exports = { taskRepository, SORT_COLUMNS, escapeLike };
