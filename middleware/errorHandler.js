@@ -1,40 +1,104 @@
-const crypto = require("crypto");
 const AppError = require("../utils/AppError");
+const logger = require("../utils/logger");
 
 /**
- * The single place a failure becomes a response.
+ * The single place a failure becomes an HTTP response.
  *
- * Because every controller is wrapped in asyncHandler and every service throws
- * AppError, no handler formats its own error. Previously each method built its
- * own 500 body, and those copies had drifted: three of them referenced a
- * variable that did not exist in scope, so the error handler itself threw.
+ * Every other layer either throws or calls next(err). Nothing else formats an
+ * error body. That matters because the previous version built a 500 inside each
+ * controller method, and those copies had drifted: three referenced `err` inside
+ * a `catch (error)` block, so the error handler itself threw a ReferenceError
+ * while trying to report the original failure.
  *
- * Task 3 extends this with request logging and correlation across layers.
+ * Three rules hold here:
+ *   1. Expected failures (AppError) return their own code and message.
+ *   2. Unexpected failures are logged in full and return a generic message.
+ *   3. Nothing internal — SQL text, table names, stack traces — ever reaches
+ *      the client.
  */
 
-/** Anything that reaches here matched no route. */
+/**
+ * Translates errors thrown by libraries into AppErrors.
+ *
+ * Without this, a malformed JSON body would fall through to the generic 500
+ * branch, telling the client "an unexpected error occurred" when the request
+ * was simply wrong. These are the failures the framework raises before any of
+ * our code runs.
+ */
+const normalise = (err) => {
+  if (err instanceof AppError) return err;
+
+  // express.json() throws this for a body that isn't valid JSON.
+  if (err.type === "entity.parse.failed") {
+    return AppError.badRequest("Request body is not valid JSON", [
+      { field: "body", issue: "malformed JSON" },
+    ]);
+  }
+
+  // Body larger than the configured limit.
+  if (err.type === "entity.too.large") {
+    return new AppError(413, "PAYLOAD_TOO_LARGE", "Request body is too large");
+  }
+
+  // jsonwebtoken errors, if one escapes the auth middleware.
+  if (err.name === "JsonWebTokenError") return AppError.unauthenticated("Token is invalid");
+  if (err.name === "TokenExpiredError") return AppError.unauthenticated("Token has expired");
+
+  // A unique-index violation racing past the pre-insert check. Two requests can
+  // both pass "does this email exist?" before either commits, so the database
+  // constraint is the real guarantee and this maps it to the same 409.
+  if (err.code === "ER_DUP_ENTRY") return AppError.emailTaken();
+
+  // Database unreachable. Surfaced as 503 rather than 500 because the request
+  // is fine and retrying later may well succeed.
+  if (["ECONNREFUSED", "PROTOCOL_CONNECTION_LOST", "ETIMEDOUT"].includes(err.code)) {
+    return new AppError(503, "SERVICE_UNAVAILABLE", "Service temporarily unavailable");
+  }
+
+  return null; // genuinely unexpected
+};
+
+/** Anything reaching here matched no route. */
 const notFoundHandler = (req, res, next) => {
   next(AppError.routeNotFound(req.method, req.originalUrl));
 };
 
 const errorHandler = (err, req, res, next) => {
-  // Delegate to Express if the response has already started streaming.
+  // If the response already started streaming, headers are gone and the only
+  // correct move is to let Express tear down the connection.
   if (res.headersSent) return next(err);
 
-  const requestId = crypto.randomUUID();
+  const requestId = req.id;
+  const known = normalise(err);
 
-  if (err instanceof AppError && err.isOperational) {
-    return res.status(err.statusCode).json({
+  if (known) {
+    // Client errors are noise at error level; server-side ones are not.
+    const level = known.statusCode >= 500 ? "error" : "warn";
+    logger[level](known.message, {
+      requestId,
+      method: req.method,
+      path: req.originalUrl,
+      statusCode: known.statusCode,
+      code: known.code,
+    });
+
+    return res.status(known.statusCode).json({
       success: false,
-      error: { code: err.code, message: err.message, details: err.details },
+      error: { code: known.code, message: known.message, details: known.details },
       requestId,
     });
   }
 
-  // Anything else is a bug rather than an anticipated failure. Log it in full,
-  // return nothing but the id. The old code sent details: err.message, which
-  // forwarded raw MySQL errors — table and column names included — to callers.
-  console.error(`[${requestId}] ${req.method} ${req.originalUrl}`, err);
+  // Unexpected: a bug. Log everything, tell the client nothing.
+  logger.error("Unhandled error", {
+    requestId,
+    method: req.method,
+    path: req.originalUrl,
+    statusCode: 500,
+    name: err.name,
+    message: err.message,
+    stack: err.stack,
+  });
 
   return res.status(500).json({
     success: false,
