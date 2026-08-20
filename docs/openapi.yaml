@@ -4,8 +4,14 @@ info:
   title: Todo API
   version: 1.0.0
   description: >
-    Task management API. This specification is the design contract produced in
-    Module 2 / Task 1. Rationale for every decision lives in API-DESIGN.md.
+    Task management API. Each user has their own tasks, authenticated with JWT,
+    with filtering, search, sorting and pagination.
+
+
+    This spec describes the API **as built**. It began in Module 2 / Task 1 as a
+    design document and was updated in Task 5 to match the implementation.
+    Rationale for the design decisions lives in API-DESIGN.md; querying is
+    covered in QUERYING.md and the error pipeline in VALIDATION-AND-ERRORS.md.
   license:
     name: ISC
     url: https://opensource.org/license/isc-license-txt
@@ -40,12 +46,15 @@ paths:
             Location:
               description: URL of the created user's profile
               schema: { type: string, example: /api/v1/users/me }
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/UserResponse' }
         '400': { $ref: '#/components/responses/ValidationError' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
   /auth/login:
     post:
@@ -61,6 +70,8 @@ paths:
       responses:
         '200':
           description: Authenticated
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/LoginResponse' }
@@ -80,6 +91,7 @@ paths:
                   details: []
                 requestId: 3f9a1c7e-6b21-4f0e-9c8d-5a2b7e1d4c33
         '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
   /users/me:
     get:
@@ -89,48 +101,87 @@ paths:
       responses:
         '200':
           description: Profile
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/UserResponse' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
   /tasks:
     get:
       tags: [Tasks]
       operationId: listTasks
       summary: List the caller's tasks
+      description: >
+        Filtering, search, sorting and pagination all combine on this one
+        endpoint. Unknown query parameters are rejected rather than ignored, so
+        a typo like ?pageSize=10 returns 400 instead of silently using the
+        default.
       parameters:
         - name: completed
           in: query
           description: Filter by completion state. Omit for all tasks.
           required: false
           schema: { type: boolean }
+        - name: search
+          in: query
+          description: >
+            Case-insensitive substring match against title OR description.
+            LIKE wildcards (% and _) in the term are escaped, so searching
+            "50%" finds a literal "50%".
+          required: false
+          schema: { type: string, minLength: 1, maxLength: 100 }
+        - name: createdAfter
+          in: query
+          description: Only tasks created on or after this date.
+          required: false
+          schema: { type: string, format: date }
+        - name: createdBefore
+          in: query
+          description: >
+            Only tasks created on or before this date. Must not be earlier than
+            createdAfter; an impossible range returns 400 rather than an empty
+            list.
+          required: false
+          schema: { type: string, format: date }
         - name: page
           in: query
           required: false
           schema: { type: integer, minimum: 1, default: 1 }
         - name: limit
           in: query
+          description: Capped at 100 so a single request cannot exhaust memory.
           required: false
           schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
         - name: sort
           in: query
-          description: Field to sort by. A leading '-' sorts descending.
+          description: >
+            Comma-separated list of fields. A leading '-' sorts descending.
+            Allowed fields: createdAt, updatedAt, title, completed. Repeating a
+            field is rejected. Row id is always appended as a final tiebreaker so
+            paging stays stable.
           required: false
           schema:
             type: string
-            enum: [createdAt, -createdAt, title, -title]
-            default: -createdAt
+            default: '-createdAt'
+            example: '-completed,title'
       responses:
         '200':
-          description: Task list. Returns 200 with an empty array when nothing matches.
+          description: >
+            Task list. Returns 200 with an empty array when nothing matches, and
+            when the requested page is past the end.
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TaskListResponse' }
         '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
     post:
       tags: [Tasks]
@@ -148,20 +199,23 @@ paths:
             Location:
               description: URL of the created task
               schema: { type: string, example: /api/v1/tasks/42 }
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TaskResponse' }
         '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
     delete:
       tags: [Tasks]
       operationId: bulkDeleteTasks
       summary: Bulk delete by filter
       description: >
-        Requires an explicit filter. There is deliberately no way to delete the
-        entire collection in one unguarded call.
+        The filter is required. There is deliberately no way to delete the whole
+        collection in one unguarded call.
       parameters:
         - name: completed
           in: query
@@ -170,9 +224,12 @@ paths:
       responses:
         '204':
           description: Matching tasks deleted. Empty body, including zero matches.
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
         '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
   /tasks/{taskId}:
     parameters:
@@ -188,6 +245,8 @@ paths:
       responses:
         '200':
           description: The task, as a single object
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TaskResponse' }
@@ -195,15 +254,16 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '404': { $ref: '#/components/responses/TaskNotFound' }
         '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
     patch:
       tags: [Tasks]
       operationId: patchTask
       summary: Partially update a task
       description: >
-        Any subset of fields. Omitted fields are left unchanged. A field that is
-        present but falsy — completed:false, description:"" — is applied, not
-        skipped.
+        Any subset of fields; at least one is required. Omitted fields are left
+        unchanged. A field that is present but falsy — completed:false,
+        description:null — is applied, not skipped.
       requestBody:
         required: true
         content:
@@ -212,21 +272,26 @@ paths:
       responses:
         '200':
           description: Updated task
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TaskResponse' }
         '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '404': { $ref: '#/components/responses/TaskNotFound' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
     put:
       tags: [Tasks]
       operationId: replaceTask
       summary: Replace a task
       description: >
-        Full replacement. Omitted optional fields are reset to their defaults,
-        which is what distinguishes PUT from PATCH.
+        Full replacement. Every field is required — omitting description is an
+        error rather than "leave it unchanged", which is what distinguishes PUT
+        from PATCH. Send null to clear it.
       requestBody:
         required: true
         content:
@@ -235,13 +300,17 @@ paths:
       responses:
         '200':
           description: Replaced task
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TaskResponse' }
         '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '404': { $ref: '#/components/responses/TaskNotFound' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
     delete:
       tags: [Tasks]
@@ -250,10 +319,13 @@ paths:
       responses:
         '204':
           description: Deleted. Empty body.
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/XRequestId' }
         '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '404': { $ref: '#/components/responses/TaskNotFound' }
         '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
 components:
 
@@ -263,6 +335,14 @@ components:
       scheme: bearer
       bearerFormat: JWT
 
+  headers:
+    XRequestId:
+      description: >
+        Correlation id for this request. The same value appears in the server log
+        line and in any error body, so a reported failure can be traced without
+        guessing from timestamps. An incoming X-Request-Id is honoured.
+      schema: { type: string, format: uuid }
+
   schemas:
 
     Task:
@@ -270,15 +350,15 @@ components:
       properties:
         id: { type: integer, example: 42 }
         userId: { type: integer, example: 7 }
-        title: { type: string, example: Write Module 2 docs }
-        description: { type: string, nullable: true, example: Design the REST contract }
+        title: { type: string, example: Write quarterly report }
+        description: { type: string, nullable: true, example: Finish the README }
         completed: { type: boolean, example: false }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
 
     User:
       type: object
-      description: The password hash is never serialised.
+      description: The password hash is never serialised by any endpoint.
       properties:
         id: { type: integer, example: 7 }
         name: { type: string, example: Isreal }
@@ -288,6 +368,7 @@ components:
     RegisterRequest:
       type: object
       required: [name, email, password]
+      additionalProperties: false
       properties:
         name: { type: string, minLength: 1, maxLength: 100 }
         email: { type: string, format: email }
@@ -296,22 +377,27 @@ components:
     LoginRequest:
       type: object
       required: [email, password]
+      additionalProperties: false
       properties:
         email: { type: string, format: email }
-        password: { type: string }
+        password: { type: string, minLength: 1 }
 
     CreateTaskRequest:
       type: object
       required: [title]
-      description: userId is taken from the token and ignored if sent in the body.
+      additionalProperties: false
+      description: >
+        userId is taken from the token. Unknown keys are rejected, so it cannot
+        be supplied here to create a task owned by another user.
       properties:
         title: { type: string, minLength: 1, maxLength: 255 }
-        description: { type: string, nullable: true }
+        description: { type: string, nullable: true, default: null }
         completed: { type: boolean, default: false }
 
     PatchTaskRequest:
       type: object
       minProperties: 1
+      additionalProperties: false
       properties:
         title: { type: string, minLength: 1, maxLength: 255 }
         description: { type: string, nullable: true }
@@ -320,6 +406,7 @@ components:
     ReplaceTaskRequest:
       type: object
       required: [title, description, completed]
+      additionalProperties: false
       properties:
         title: { type: string, minLength: 1, maxLength: 255 }
         description: { type: string, nullable: true }
@@ -329,9 +416,14 @@ components:
       type: object
       properties:
         page: { type: integer, example: 1 }
-        limit: { type: integer, example: 20 }
+        limit: { type: integer, example: 10 }
         total: { type: integer, example: 37 }
-        totalPages: { type: integer, example: 2 }
+        totalPages: { type: integer, example: 4 }
+        hasNextPage:
+          type: boolean
+          description: Computed server-side so clients need not repeat the arithmetic.
+          example: true
+        hasPreviousPage: { type: boolean, example: false }
 
     TaskResponse:
       type: object
@@ -386,13 +478,16 @@ components:
                 - TASK_NOT_FOUND
                 - ROUTE_NOT_FOUND
                 - EMAIL_ALREADY_EXISTS
+                - PAYLOAD_TOO_LARGE
                 - RATE_LIMITED
                 - INTERNAL_ERROR
+                - SERVICE_UNAVAILABLE
             message:
               type: string
               description: Human-readable. Wording may change; do not parse.
             details:
               type: array
+              description: Every validation failure, not just the first.
               items:
                 type: object
                 properties:
@@ -400,12 +495,15 @@ components:
                   issue: { type: string }
         requestId:
           type: string
+          format: uuid
           description: Correlates this response with the server log entry.
 
   responses:
 
     ValidationError:
-      description: Malformed request, failed validation, or bad query parameter
+      description: >
+        Malformed body, failed validation, bad query parameter, or an unknown
+        field. Every problem is listed in details, not just the first.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -415,8 +513,10 @@ components:
               code: VALIDATION_ERROR
               message: Request validation failed
               details:
-                - field: title
-                  issue: title is required
+                - field: email
+                  issue: a valid email is required
+                - field: password
+                  issue: password must be at least 8 characters
             requestId: 3f9a1c7e-6b21-4f0e-9c8d-5a2b7e1d4c33
 
     Unauthenticated:
@@ -428,7 +528,7 @@ components:
             success: false
             error:
               code: UNAUTHENTICATED
-              message: Authentication required
+              message: A bearer token is required
               details: []
             requestId: 3f9a1c7e-6b21-4f0e-9c8d-5a2b7e1d4c33
 
@@ -460,6 +560,19 @@ components:
               details: []
             requestId: 3f9a1c7e-6b21-4f0e-9c8d-5a2b7e1d4c33
 
+    PayloadTooLarge:
+      description: Request body exceeded the 100kb limit
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+          example:
+            success: false
+            error:
+              code: PAYLOAD_TOO_LARGE
+              message: Request body is too large
+              details: []
+            requestId: 3f9a1c7e-6b21-4f0e-9c8d-5a2b7e1d4c33
+
     InternalError:
       description: >
         Unhandled server fault. The underlying error is logged against requestId
@@ -472,6 +585,21 @@ components:
             error:
               code: INTERNAL_ERROR
               message: An unexpected error occurred
+              details: []
+            requestId: 3f9a1c7e-6b21-4f0e-9c8d-5a2b7e1d4c33
+
+    ServiceUnavailable:
+      description: >
+        The database is unreachable. Distinguished from 500 because the request
+        itself was fine and retrying later may succeed.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+          example:
+            success: false
+            error:
+              code: SERVICE_UNAVAILABLE
+              message: Service temporarily unavailable
               details: []
             requestId: 3f9a1c7e-6b21-4f0e-9c8d-5a2b7e1d4c33
 

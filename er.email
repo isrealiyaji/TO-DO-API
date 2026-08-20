@@ -1,0 +1,27 @@
+a8e4a21  Isreal Iyaji  <isrealiyaji1@gmail.com>  feat: add pagination, filtering, sorting and search to task listing
+ac78095  Isreal  <isrealiyaji@gmail.com>  git commit -m @' feat: add runtime request validation and centralized error handling
+3ae755e  Isreal  <isrealiyaji@gmail.com>  git commit -m @' refactor: separate routes, controllers, services and database access
+8374f17  Isreal  <isrealiyaji@gmail.com>  docs: design REST resources, endpoints and status codes
+e4a7fb6  Isreal  <isrealiyaji@gmail.com>  docs: design REST resources, endpoints and status codes
+e600770  Isreal Iyaji  <isrealiyaji1@gmail.com>  added auth to the taskController
+9d13a54  Stephen Akugbe  <stephenakugbe@MacBookPro.lan>  Feat: Added authentication middleware
+7e83e26  Stephen Akugbe  <stephenakugbe@MacBookPro.lan>  Feat: Added JWT
+3a587a5  STEPHEN  <harkugbeosaz@gmail.com>  Feat: Added authentication and user sign up
+c35e38e  STEPHEN  <harkugbeosaz@gmail.com>  Fix: Resolving conflicts
+ee26ffc  STEPHEN  <harkugbeosaz@gmail.com>  Feat: Added authentication and user sign up
+6c9365a  Akugbe Stephen  <harkugbeosaz@gmail.com>  Merge pull request #4 from isrealiyaji/new-feature
+9556b41  Isreal Iyaji  <isrealiyaji1@gmail.com>  Completed the querry for Delete a task, Delete all tasks and I updated the Readme file
+ad768a5  Isreal Iyaji  <89421395+isrealiyaji@users.noreply.github.com>  Merge branch 'Learn-NodeJS-with-Stephen:main' into main
+6da49e8  STEPHEN  <harkugbeosaz@gmail.com>  Feat: Added DB connection to API
+37ea3cc  Isreal Iyaji  <89421395+isrealiyaji@users.noreply.github.com>  Merge branch 'Learn-NodeJS-with-Stephen:main' into main
+f56aa1c  STEPHEN  <harkugbeosaz@gmail.com>  Feat: Usr authentication implementation
+dab3892  Akugbe Stephen  <harkugbeosaz@gmail.com>  Merge pull request #2 from isrealiyaji/feature/CRUD-ops
+0fd5af4  Isreal Iyaji  <89421395+isrealiyaji@users.noreply.github.com>  Merge branch 'Learn-NodeJS-with-Stephen:main' into main
+43bcb17  Isreal Iyaji  <isrealiyaji1@gmail.com>  added CRUD ops to the TODO
+3ca7276  Akugbe Stephen  <harkugbeosaz@gmail.com>  Merge pull request #1 from isrealiyaji/isrealiyaji-To-DO-API
+573e624  Isreal Iyaji  <89421395+isrealiyaji@users.noreply.github.com>  Update tasksController.js
+ecfe360  Isreal Iyaji  <89421395+isrealiyaji@users.noreply.github.com>  README.md
+43a1e5c  Isreal Iyaji  <89421395+isrealiyaji@users.noreply.github.com>  Update README.md
+9959e23  STEPHEN  <harkugbeosaz@gmail.com>  Feat: Learning about controllers and routes
+ea620ab  STEPHEN  <Stephen>  Feat: To do API completed
+0f95820  STEPHEN  <Stephen>  Feat: To do API completed
